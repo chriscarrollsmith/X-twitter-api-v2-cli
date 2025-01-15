@@ -7,10 +7,16 @@ import hashlib
 from urllib.parse import urlencode, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
+from requests_oauthlib import OAuth1
 
 load_dotenv()
 
 # --- Configuration ---
+# Twitter API credentials (replace with your own keys and tokens)
+CONSUMER_KEY = os.environ.get("X_API_KEY")
+CONSUMER_SECRET = os.environ.get("X_API_SECRET")
+ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN")
+ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET")
 CLIENT_ID = os.environ.get("X_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("X_CLIENT_SECRET")
 REDIRECT_URI = "http://127.0.0.1:5000/oauth/callback"  # Replace with your actual redirect URI
@@ -19,6 +25,28 @@ AUTHORIZATION_URL = "https://twitter.com/i/oauth2/authorize"
 TOKEN_URL = "https://api.x.com/2/oauth2/token"
 TWEET_URL = "https://api.x.com/2/tweets"
 MEDIA_URL = "https://api.twitter.com/2/media/upload"
+
+load_dotenv()
+
+# Initialize OAuth1 authentication
+auth = OAuth1(CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
+
+def upload_media(file_path):
+    """
+    Upload media to Twitter and return the media ID.
+    """
+    upload_url = "https://upload.twitter.com/1.1/media/upload.json"
+    try:
+        with open(file_path, "rb") as file:
+            files = {"media": file}
+            response = requests.post(upload_url, auth=auth, files=files)
+            response.raise_for_status()  # Raise error if the request fails
+            media_id = response.json().get("media_id_string")
+            print(f"Media uploaded successfully! Media ID: {media_id}")
+            return media_id
+    except Exception as e:
+        print(f"Failed to upload media: {e}")
+        return None
 
 # --- Helper Functions ---
 def generate_code_verifier():
@@ -90,52 +118,6 @@ def post_tweet(access_token, text):
     response = requests.post(TWEET_URL, headers=headers, json=payload)
     response.raise_for_status()
     return response.json()
-
-def upload_media(access_token, file_path, media_category="tweet_image"):
-    """Uploads media using the provided access token."""
-    total_bytes = os.path.getsize(file_path)
-    file_extension = file_path.split(".")[-1]
-    mime_type = f"image/{file_extension}"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-    }
-    # INIT
-    params = {
-        "media_category": media_category,
-        "total_bytes": total_bytes,
-        "media_type": mime_type,
-        "command": "INIT"
-    }
-    response = requests.post(MEDIA_URL, headers=headers, params=params)
-    response.raise_for_status()
-    media_id = response.json()["media_id"]
-
-    # APPEND in chunks
-    with open(file_path, "rb") as f:
-        chunk_size = 1024 * 1024  # 1MB chunks
-        segment_index = 0
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-            params = {
-                "command": "APPEND",
-                "media_id": media_id,
-                "segment_index": segment_index
-            }
-            files = {"media": chunk}
-            response = requests.post(MEDIA_URL, headers=headers, params=params, files=files)
-            response.raise_for_status()
-            segment_index += 1
-
-    # FINALIZE
-    params = {
-        "command": "FINALIZE",
-        "media_id": media_id
-    }
-    response = requests.post(MEDIA_URL, headers=headers, params=params)
-    response.raise_for_status()
-    return media_id
 
 def post_tweet_with_media(access_token, text, media_ids):
     """Posts a tweet with media using the provided access token."""
@@ -236,7 +218,7 @@ if __name__ == "__main__":
 
     # 8. Upload media
     try:
-        media_id = upload_media(access_token, "test.png") # Replace with your actual file path
+        media_id = upload_media("test.png") # Replace with your actual file path
         print(f"Media uploaded successfully: {media_id}")
     except requests.exceptions.RequestException as e:
         print(f"Error uploading media: {e}")
