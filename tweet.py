@@ -237,21 +237,26 @@ if __name__ == "__main__":
             print(f"Error refreshing access token: {e}")
             exit()
 
-    # 7. (Optional) Post a tweet (commented out for now)
-    # ...
+    # 7. Prompt user for tweet text and media path
+    tweet_text = input("Enter your tweet message: ")
+    media_path = input("Enter the path to your media file (or leave empty for no media): ")
 
-    # 8. Upload media
-    try:
-        media_id = upload_media("test.png")  # Replace with your actual file path
-        print(f"Media uploaded successfully: {media_id}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error uploading media: {e}")
-        exit()
+    # 8. Upload media if provided
+    media_id = None
+    if media_path:
+        try:
+            media_id = upload_media(media_path)
+            print(f"Media uploaded successfully: {media_id}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error uploading media: {e}")
+            exit()
 
-    # 9. Post a tweet with media
+    # 9. Post the tweet
     try:
-        tweet_text = "Hello world! This is a test tweet with media using OAuth 2.0."
-        tweet_response = post_tweet_with_media(access_token, tweet_text, [media_id])  # type: ignore
-        print(f"Tweet with media posted successfully: {tweet_response}")
+        if media_id:
+            tweet_response = post_tweet_with_media(access_token, tweet_text, [media_id])  # type: ignore
+        else:
+            tweet_response = post_tweet(access_token, tweet_text)
+        print(f"Tweet posted successfully: {tweet_response}")
     except requests.exceptions.RequestException as e:
-        print(f"Error posting tweet with media: {e}")
+        print(f"Error posting tweet: {e}")
