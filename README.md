@@ -51,7 +51,7 @@ You will also need to generate an access token and secret from your application'
 
 ## Usage
 
-To run the application, use `uv run tweet.py`. This will start a Flask server on port 5000. You can then navigate to `[http://127.0.0.1:5000](http://127.0.0.1:5000)` in a web browser to view the app.
+To run the application, use `uv run tweet.py`. This will start a Flask server on port 5000. You can then navigate to [http://127.0.0.1:5000](http://127.0.0.1:5000) in a web browser to view the app.
 
 The app consists of a simple prompt that allows you to input text and select an image to go with the text. Supply some text and a media file path, or leave the media path blank for a text-only tweet. You will be redirected to Twitter to authenticate with your account. Once you authenticate, you will be redirected back to the app, which will print a link to your posted tweet.
 
