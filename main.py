@@ -1,14 +1,20 @@
 import os
 import requests
 from dotenv import load_dotenv
-import secrets
 import base64
-import hashlib
 from urllib.parse import urlencode, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
-from requests_oauthlib import OAuth1
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
+from x_bot.auth import (
+    create_oauth1_auth,
+    initialize_oauth_flow,
+    exchange_code_for_token,
+    refresh_token_if_needed,
+    create_oauth2_session
+)
+from x_bot.tweet import post_tweet
+from x_bot.session import save_token
 
 load_dotenv()
 
@@ -27,27 +33,8 @@ TOKEN_URL = "https://api.x.com/2/oauth2/token"
 TWEET_URL = "https://api.x.com/2/tweets"
 MEDIA_URL = "https://api.twitter.com/2/media/upload"
 
-load_dotenv()
-
 # Initialize OAuth1 authentication
-auth = OAuth1(CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
-
-def upload_media(file_path: str) -> str | None:
-    """
-    Upload media to Twitter and return the media ID.
-    """
-    upload_url = "https://upload.twitter.com/1.1/media/upload.json"
-    try:
-        with open(file_path, "rb") as file:
-            files = {"media": file}
-            response = requests.post(upload_url, auth=auth, files=files)
-            response.raise_for_status()  # Raise error if the request fails
-            media_id = response.json().get("media_id_string")
-            print(f"Media uploaded successfully! Media ID: {media_id}")
-            return media_id
-    except Exception as e:
-        print(f"Failed to upload media: {e}")
-        return None
+auth = create_oauth1_auth()  # Replaces manual OAuth1 initialization
 
 # --- New Helper to reduce repetitive code when applying auth ---
 def _apply_auth_if_confidential(headers: Dict[str, str], data: Dict[str, str]) -> None:
@@ -62,17 +49,6 @@ def _apply_auth_if_confidential(headers: Dict[str, str], data: Dict[str, str]) -
         data.pop("client_id", None)
 
 # --- Helper Functions ---
-def generate_code_verifier() -> str:
-    """Generates a random code verifier string."""
-    return secrets.token_urlsafe(100)
-
-def generate_code_challenge(code_verifier: str) -> str:
-    """Generates the code challenge from the code verifier."""
-    code_challenge: bytes = hashlib.sha256(code_verifier.encode()).digest()
-    code_challenge_b64: str = base64.urlsafe_b64encode(code_challenge).decode()
-    code_challenge_b64 = code_challenge_b64.rstrip("=")
-    return code_challenge_b64
-
 def create_authorization_url(code_challenge: str, state: str) -> str:
     """Constructs the authorization URL."""
     params = {
@@ -119,28 +95,6 @@ def refresh_access_token(refresh_token: str) -> Dict[str, str]:
     # Use the helper to apply Basic Auth if needed
     _apply_auth_if_confidential(headers, data)
     response = requests.post(TOKEN_URL, headers=headers, data=data)
-    response.raise_for_status()
-    return response.json()
-
-def post_tweet(access_token: str, text: str) -> Dict[str, str]:
-    """Posts a tweet using the provided access token."""
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {"text": text}
-    response = requests.post(TWEET_URL, headers=headers, json=payload)
-    response.raise_for_status()
-    return response.json()
-
-def post_tweet_with_media(access_token: str, text: str, media_ids: List[str]) -> Dict[str, str]:
-    """Posts a tweet with media using the provided access token."""
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {"text": text, "media": {"media_ids": media_ids}}
-    response = requests.post(TWEET_URL, headers=headers, json=payload)
     response.raise_for_status()
     return response.json()
 
@@ -197,66 +151,63 @@ def start_oauth_server() -> Tuple[str, Optional[str]]:
     httpd.shutdown()
     return auth_code, returned_state
 
-# --- Main Flow ---
+# --- Updated Main Flow ---
 if __name__ == "__main__":
-    # 1. Generate PKCE parameters
-    code_verifier = generate_code_verifier()
-    code_challenge = generate_code_challenge(code_verifier)
-    state = secrets.token_urlsafe(16)
-
-    # 2. Construct the authorization URL
-    auth_url = create_authorization_url(code_challenge, state)
+    # 1. Initialize OAuth flow using auth.py helper
+    twitter_session, code_verifier, auth_url, state = initialize_oauth_flow()
     print(f"Please visit this URL to authorize the app:\n{auth_url}")
 
-    # 3. Start the HTTP server in a separate thread
+    # 2. Start the HTTP server in a separate thread
     auth_code, returned_state = start_oauth_server()
     print("Authorization code received.")
 
-    # 4. Validate state
+    # 3. Validate state
     if returned_state != state:
         raise Exception("State does not match")
 
-    # 5. Exchange authorization code for an access token
+    # 4. Exchange authorization code for token using auth.py helper
     try:
-        token_response = get_access_token(auth_code, code_verifier)
-        access_token = token_response["access_token"]
-        refresh_token = token_response.get("refresh_token")
+        token_response = exchange_code_for_token(twitter_session, auth_code, code_verifier)
+        if not token_response:
+            raise Exception("Failed to obtain access token")
+            
+        # Create a proper session with the new token
+        session = create_oauth2_session(token_response)
+        
+        # Check and refresh token if needed using auth.py helper
+        new_token = refresh_token_if_needed(session, token_response)
+        if new_token:
+            token_response = new_token
+            
         print("Successfully obtained access token.")
     except requests.exceptions.RequestException as e:
         print(f"Error obtaining access token: {e}")
         exit()
 
-    # 6. (Optional) Refresh the access token if needed
-    if refresh_token:
-        try:
-            refreshed_token_response = refresh_access_token(refresh_token)
-            access_token = refreshed_token_response["access_token"]
-            refresh_token = refreshed_token_response.get("refresh_token")
-            print("Successfully refreshed access token.")
-        except requests.exceptions.RequestException as e:
-            print(f"Error refreshing access token: {e}")
-            exit()
+    # After obtaining the token_response
+    user_id = "default_user"  # In real app, get from user system
+    save_token(user_id, token_response)
+    
+    # When loading token (for subsequent runs)
+    # token_response = load_token(user_id)
 
-    # 7. Prompt user for tweet text and media path
+    # 6. Prompt user for tweet text and media path
     tweet_text = input("Enter your tweet message: ")
-    media_path = input("Enter the path to your media file (or leave empty for no media): ")
+    media_path = input("Enter the path to your media file (or leave empty for no media): ").strip() or None
 
-    # 8. Upload media if provided
-    media_id = None
-    if media_path:
-        try:
-            media_id = upload_media(media_path)
-            print(f"Media uploaded successfully: {media_id}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error uploading media: {e}")
-            exit()
-
-    # 9. Post the tweet
+    # 7. Post the tweet using the unified function
     try:
-        if media_id:
-            tweet_response = post_tweet_with_media(access_token, tweet_text, [media_id])  # type: ignore
+        # Use media.py helper instead of direct media upload
+        success, message = post_tweet(
+            text=tweet_text,
+            media_path=media_path,
+            new_token=token_response
+        )
+        
+        if success:
+            print(f"✅ Success: {message}")
         else:
-            tweet_response = post_tweet(access_token, tweet_text)
-        print(f"Tweet posted successfully: {tweet_response}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error posting tweet: {e}")
+            print(f"❌ Error: {message}")
+            
+    except Exception as e:
+        print(f"❌ Unexpected error: {str(e)}")
