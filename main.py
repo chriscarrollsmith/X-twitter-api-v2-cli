@@ -6,15 +6,16 @@ from urllib.parse import urlencode, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 from typing import Dict, Optional, Tuple
-from x_bot.auth import (
+from x_twitter_api_v2_cli.auth import (
     create_oauth1_auth,
     initialize_oauth_flow,
     exchange_code_for_token,
     refresh_token_if_needed,
-    create_oauth2_session
+    create_oauth2_session,
+    is_token_expired
 )
-from x_bot.tweet import post_tweet
-from x_bot.session import save_token
+from x_twitter_api_v2_cli.session import save_token, load_token
+from x_twitter_api_v2_cli.tweet import post_tweet
 
 load_dotenv()
 
@@ -153,49 +154,62 @@ def start_oauth_server() -> Tuple[str, Optional[str]]:
 
 # --- Updated Main Flow ---
 if __name__ == "__main__":
-    # 1. Initialize OAuth flow using auth.py helper
-    twitter_session, code_verifier, auth_url, state = initialize_oauth_flow()
-    print(f"Please visit this URL to authorize the app:\n{auth_url}")
+    user_id = "default_user"  # In real app, get from user system
 
-    # 2. Start the HTTP server in a separate thread
-    auth_code, returned_state = start_oauth_server()
-    print("Authorization code received.")
+    # 1. Try to load an existing token
+    token_response = load_token(user_id)
 
-    # 3. Validate state
-    if returned_state != state:
-        raise Exception("State does not match")
-
-    # 4. Exchange authorization code for token using auth.py helper
-    try:
-        token_response = exchange_code_for_token(twitter_session, auth_code, code_verifier)
-        if not token_response:
-            raise Exception("Failed to obtain access token")
-            
-        # Create a proper session with the new token
+    # 2. If we already have a token, check if it's expired or about to expire
+    if token_response and not is_token_expired(token_response):
+        # (Optional) Attempt a refresh right away if you want to extend its life
         session = create_oauth2_session(token_response)
-        
-        # Check and refresh token if needed using auth.py helper
         new_token = refresh_token_if_needed(session, token_response)
         if new_token:
             token_response = new_token
+        print("Using existing valid token.")
+    else:
+        # 3. Initialize OAuth flow using auth.py helper
+        twitter_session, code_verifier, auth_url, state = initialize_oauth_flow()
+        print(f"Please visit this URL to authorize the app:\n{auth_url}")
+
+        # 4. Start the HTTP server in a separate thread
+        auth_code, returned_state = start_oauth_server()
+        print("Authorization code received.")
+
+        # 5. Validate state
+        if returned_state != state:
+            raise Exception("State does not match")
+
+        # 6. Exchange authorization code for token using auth.py helper
+        try:
+            token_response = exchange_code_for_token(twitter_session, auth_code, code_verifier)
+            if not token_response:
+                raise Exception("Failed to obtain access token")
+                
+            # Create a proper session with the new token
+            session = create_oauth2_session(token_response)
             
-        print("Successfully obtained access token.")
-    except requests.exceptions.RequestException as e:
-        print(f"Error obtaining access token: {e}")
-        exit()
+            # Check and refresh token if needed using auth.py helper
+            new_token = refresh_token_if_needed(session, token_response)
+            if new_token:
+                token_response = new_token
+                
+            print("Successfully obtained access token.")
+        except requests.exceptions.RequestException as e:
+            print(f"Error obtaining access token: {e}")
+            exit()
 
     # After obtaining the token_response
-    user_id = "default_user"  # In real app, get from user system
     save_token(user_id, token_response)
     
     # When loading token (for subsequent runs)
     # token_response = load_token(user_id)
 
-    # 6. Prompt user for tweet text and media path
+    # 7. Prompt user for tweet text and media path
     tweet_text = input("Enter your tweet message: ")
     media_path = input("Enter the path to your media file (or leave empty for no media): ").strip() or None
 
-    # 7. Post the tweet using the unified function
+    # 8. Post the tweet using the unified function
     try:
         # Use media.py helper instead of direct media upload
         success, message = post_tweet(
